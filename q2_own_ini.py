@@ -89,23 +89,21 @@ def load_and_split_data(base_path, non_face_dir, modified_face_dir):
             test_subject_ids)
 
 
-class CustomPCAClassifier:
-    def __init__(self, n_components=50, distance_weight=10.0):
+class CustomPCAClassifier_ini:
+    def __init__(self, n_components=50, threshold=0.8):
         self.n_components = n_components
-        self.distance_weight = distance_weight  # Weight for distance scaling
+        self.threshold = threshold
         self.components = None
         self.mean = None
         self.class_means = {}
-        self.class_covariances = {}  # Store class covariances
         self.classes = None
         self.explained_variance_ratio = None
         self.training_features = None
         self.training_labels = None
-        self.feature_std = None  # Store feature standard deviation
 
     def fit(self, X, y):
         """
-        Fit PCA and compute class statistics in reduced space
+        Fit PCA and compute class means in reduced space
         """
         # Center the data
         self.mean = np.mean(X, axis=0)
@@ -124,57 +122,41 @@ class CustomPCAClassifier:
 
         # Project training data
         self.training_features = np.dot(X_centered, self.components)
-
-        # Normalize features
-        self.feature_std = np.std(self.training_features, axis=0)
-        self.feature_std[self.feature_std == 0] = 1
-        self.training_features = self.training_features / self.feature_std
-
         self.training_labels = y
         self.classes = np.unique(y)
 
-        # Compute class statistics
+        # Compute mean feature vector for each class
         for c in self.classes:
             class_samples = self.training_features[y == c]
             self.class_means[c] = np.mean(class_samples, axis=0)
-            # Compute class covariance with regularization
-            cov = np.cov(class_samples.T)
-            # Add small constant to diagonal for stability
-            cov += np.eye(cov.shape[0]) * 1e-6
-            self.class_covariances[c] = cov
 
     def project(self, X):
         """
-        Project data onto normalized PCA space
+        Project data onto PCA space
         """
         X_centered = X - self.mean
-        X_proj = np.dot(X_centered, self.components)
-        return X_proj / self.feature_std
+        return np.dot(X_centered, self.components)
 
-    def mahalanobis_distance(self, sample, class_mean, class_cov):
+    def stable_softmax(self, x):
         """
-        Compute Mahalanobis distance between sample and class
+        Compute softmax values in a numerically stable way
         """
-        diff = sample - class_mean
-        try:
-            inv_cov = np.linalg.inv(class_cov)
-            dist = np.sqrt(diff.dot(inv_cov).dot(diff))
-            return dist
-        except np.linalg.LinAlgError:
-            # Fallback to Euclidean distance if inversion fails
-            return np.linalg.norm(diff)
+        # Subtract the maximum value for numerical stability
+        shifted_x = x - np.max(x)
+        exp_x = np.exp(shifted_x)
+        return exp_x / np.sum(exp_x)
 
-    def compute_confidence(self, distances):
+    def compute_distance_scores(self, sample):
         """
-        Compute confidence score based on distances
+        Compute distance scores to all class means
         """
-        # Convert distances to similarities using exponential
-        similarities = np.exp(-distances / self.distance_weight)
-
-        # Normalize similarities to [0, 1]
-        if similarities.sum() > 0:
-            return similarities / similarities.sum()
-        return similarities
+        distances = []
+        classes = []
+        for c in sorted(self.class_means.keys()):
+            dist = np.linalg.norm(sample - self.class_means[c])
+            distances.append(dist)
+            classes.append(c)
+        return np.array(distances), np.array(classes)
 
     def predict(self, X):
         """
@@ -185,20 +167,16 @@ class CustomPCAClassifier:
         confidences = []
 
         for sample in X_proj:
-            # Compute distances to all classes using Mahalanobis distance
-            distances = np.array([
-                self.mahalanobis_distance(
-                    sample, self.class_means[c], self.class_covariances[c])
-                for c in self.classes
-            ])
+            distances, classes = self.compute_distance_scores(sample)
 
-            # Get prediction and confidence
+            # Find minimum distance and corresponding class
             min_dist_idx = np.argmin(distances)
-            predicted_class = self.classes[min_dist_idx]
+            predicted_class = classes[min_dist_idx]
 
-            # Compute confidence scores
-            conf_scores = self.compute_confidence(distances)
-            confidence = conf_scores[min_dist_idx]
+            # Compute confidence score using scaled exponential
+            confidence = np.exp(-distances[min_dist_idx] / self.threshold)
+            # Clip confidence to [0, 1]
+            confidence = np.clip(confidence, 0, 1)
 
             predictions.append(predicted_class)
             confidences.append(confidence)
@@ -213,31 +191,29 @@ class CustomPCAClassifier:
         probas = []
 
         for sample in X_proj:
-            # Compute distances to all classes
-            distances = np.array([
-                self.mahalanobis_distance(
-                    sample, self.class_means[c], self.class_covariances[c])
-                for c in self.classes
-            ])
+            distances, _ = self.compute_distance_scores(sample)
 
-            # Convert distances to probabilities
-            probas.append(self.compute_confidence(distances))
+            # Convert distances to similarity scores (negative distances)
+            similarity_scores = -distances / self.threshold
+
+            # Apply stable softmax
+            proba = self.stable_softmax(similarity_scores)
+            probas.append(proba)
 
         return np.array(probas)
 
 
-def evaluate_classification(train_data, train_labels,
-                            test_data_train, test_labels_train,
-                            test_data_test, test_labels_test,
-                            non_face_data, modified_face_data,
-                            n_components=50):
+def evaluate_classification_ini(train_data, train_labels,
+                                test_data_train, test_labels_train,
+                                test_data_test, test_labels_test,
+                                non_face_data, modified_face_data,
+                                n_components=50):
     """
-    Evaluate both face recognition and identification using improved PCA classifier
+    Evaluate both face recognition and identification using custom PCA classifier
     """
     try:
         # Initialize and train classifier
-        clf = CustomPCAClassifier(
-            n_components=n_components, distance_weight=15.0)
+        clf = CustomPCAClassifier_ini(n_components=n_components)
         clf.fit(train_data, train_labels)
 
         # Get predictions
@@ -294,7 +270,7 @@ def visualize_eigenfaces(clf, num_components=5):
         plt.title(f'Component {i+1}')
         plt.axis('off')
     plt.tight_layout()
-    plt.savefig('eigenfaces_new.png')
+    plt.savefig('eigenfaces_ini.png')
     plt.close()
 
 
@@ -361,29 +337,20 @@ def main():
     print(f"Modified face images: {len(modified_face_data)} images")
     print(f"Test subjects: {sorted(test_subject_ids)}")
 
-    # Train classifier and evaluate
-    print("\nTraining and evaluating custom PCA classifier...")
-    results = evaluate_classification(
+    # Train initial classifier and evaluate
+    print("\nTraining and evaluating initial custom PCA classifier...")
+    results = evaluate_classification_ini(
         train_data, train_labels,
         test_data_train, test_labels_train,
         test_data_test, test_labels_test,
         non_face_data, modified_face_data
     )
 
-    # Train initial classifier and evaluate
-    # print("\nTraining and evaluating initial custom PCA classifier...")
-    # results = evaluate_classification_ini(
-    #     train_data, train_labels,
-    #     test_data_train, test_labels_train,
-    #     test_data_test, test_labels_test,
-    #     non_face_data, modified_face_data
-    # )
-
     # Print results and generate visualizations
     print_results(results, test_labels_train, test_labels_test)
 
     # Visualize eigenfaces
-    clf = CustomPCAClassifier()
+    clf = CustomPCAClassifier_ini()
     clf.fit(train_data, train_labels)
     visualize_eigenfaces(clf)
 

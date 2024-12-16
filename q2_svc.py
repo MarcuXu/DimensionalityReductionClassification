@@ -261,7 +261,7 @@ def visualize_results(results, test_data_train, test_labels_train,
     plot_performance_metrics(results, test_labels_train, test_labels_test)
 
     plt.tight_layout()
-    plt.savefig('classification_results.png')
+    plt.savefig('classification_results_svc.png')
     plt.close()
 
     # Create separate visualization for sample images and their predictions
@@ -363,7 +363,7 @@ def visualize_sample_predictions(results, test_data_train, test_data_test,
         plt.axis('off')
 
     plt.tight_layout()
-    plt.savefig('sample_predictions.png')
+    plt.savefig('sample_predictions_svc.png')
     plt.close()
 
 
@@ -411,7 +411,6 @@ def main():
                       test_data_test, test_labels_test,
                       non_face_data, modified_face_data,
                       test_subject_ids)
-    print("Visualizations saved as 'classification_results.png' and 'sample_predictions.png'")
 
 
 if __name__ == "__main__":

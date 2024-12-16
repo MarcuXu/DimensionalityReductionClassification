@@ -475,52 +475,6 @@ def evaluate_classification(train_data, train_labels,
         return None
 
 
-# def print_results(results, test_labels_train, test_labels_test):
-#     """
-#     Print comprehensive evaluation results
-#     """
-#     print("\nFace Identification Results:")
-#     print("\nOn training subjects (2 images each):")
-#     acc_train = accuracy_score(
-#         test_labels_train,
-#         results['identification']['train_subjects']
-#     )
-#     print(f"Accuracy: {acc_train:.3f}")
-
-#     print("\nOn test subjects (10 images each):")
-#     acc_test = accuracy_score(
-#         test_labels_test,
-#         results['identification']['test_subjects']
-#     )
-#     print(f"Accuracy: {acc_test:.3f}")
-
-#     print("\nFace Recognition Results:")
-#     print("\nOn non-face images:")
-#     non_face_preds = results['recognition']['non_face']
-#     non_face_correct = np.mean(
-#         [pred not in test_labels_train for pred in non_face_preds]
-#     )
-#     print(f"Rejection rate: {non_face_correct:.3f}")
-
-#     print("\nOn modified face images:")
-#     modified_preds = results['recognition']['modified']
-#     modified_detection = np.mean(
-#         [pred in np.unique(test_labels_train) for pred in modified_preds]
-#     )
-#     print(f"Detection rate: {modified_detection:.3f}")
-
-#     print("\nConfidence Statistics:")
-#     for data_type in ['train', 'test', 'non_face', 'modified']:
-#         conf = results['confidences'][data_type]
-#         print(f"\n{data_type.capitalize()} images:")
-#         print(f"Mean confidence: {np.mean(conf):.3f}")
-#         print(f"Min confidence: {np.min(conf):.3f}")
-#         print(f"Max confidence: {np.max(conf):.3f}")
-
-#     print("\nOptimal Feature Weights:")
-#     print(f"LBP features: {results['optimal_weights'][0]:.3f}")
-#     print(f"Gradient features: {results['optimal_weights'][1]:.3f}")
-#     print(f"PCA features: {results['optimal_weights'][2]:.3f}")
 def print_results(results, test_labels_train, test_labels_test):
     """
     Print comprehensive evaluation results
