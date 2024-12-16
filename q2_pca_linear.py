@@ -3,7 +3,47 @@ from PIL import Image
 import os
 import random
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score
+# from sklearn.metrics import accuracy_score
+
+
+def accuracy_score(y_true, y_pred):
+    """
+    Calculate accuracy score between true labels and predicted labels.
+
+    Parameters:
+    -----------
+    y_true : array-like
+        Ground truth (correct) labels
+    y_pred : array-like
+        Predicted labels
+
+    Returns:
+    --------
+    float
+        Accuracy score between 0.0 and 1.0
+
+    Example:
+    --------
+    >>> y_true = [1, 2, 3, 4, 5]
+    >>> y_pred = [1, 2, 3, 5, 4]
+    >>> custom_accuracy_score(y_true, y_pred)
+    0.6
+    """
+    # Convert inputs to numpy arrays if they aren't already
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+
+    # Check if arrays have same shape
+    if y_true.shape != y_pred.shape:
+        raise ValueError("Arrays must have the same shape")
+
+    # Calculate number of correct predictions
+    correct_predictions = np.sum(y_true == y_pred)
+
+    # Calculate accuracy
+    accuracy = correct_predictions / len(y_true)
+
+    return accuracy
 
 
 def load_and_split_data(base_path, non_face_dir, modified_face_dir):
@@ -96,30 +136,34 @@ def load_and_split_data(base_path, non_face_dir, modified_face_dir):
             test_subject_ids)
 
 
-class CustomPCAClassifier:
-    def __init__(self, n_components=50, distance_weight=10.0):
+class LinearRegressionPCAClassifier:
+    def __init__(self, n_components=50, learning_rate=0.0001, n_iterations=500):
         self.n_components = n_components
-        self.distance_weight = distance_weight  # Weight for distance scaling
+        self.learning_rate = learning_rate
+        self.n_iterations = n_iterations
         self.components = None
         self.mean = None
-        self.class_means = {}
-        self.class_covariances = {}  # Store class covariances
-        self.classes = None
+        self.weights = None
+        self.bias = None
         self.explained_variance_ratio = None
-        self.training_features = None
-        self.training_labels = None
-        self.feature_std = None  # Store feature standard deviation
+        self.n_classes = 40  # Fixed number of classes for AT&T dataset
+        self.feature_scale = None
+
+    def standardize(self, X):
+        """Standardize the features"""
+        return (X - self.mean) / (self.feature_scale + 1e-8)
 
     def fit(self, X, y):
         """
-        Fit PCA and compute class statistics in reduced space
+        Fit PCA and then train linear regression on reduced data
         """
-        # Center the data
+        # Compute mean and standard deviation for standardization
         self.mean = np.mean(X, axis=0)
-        X_centered = X - self.mean
+        self.feature_scale = np.std(X, axis=0) + 1e-8
+        X_standardized = self.standardize(X)
 
         # Compute SVD
-        U, s, Vt = np.linalg.svd(X_centered, full_matrices=False)
+        U, s, Vt = np.linalg.svd(X_standardized, full_matrices=False)
 
         # Calculate explained variance ratio
         explained_variance = (s ** 2) / (X.shape[0] - 1)
@@ -129,125 +173,137 @@ class CustomPCAClassifier:
         # Store principal components
         self.components = Vt[:self.n_components].T
 
-        # Project training data
-        self.training_features = np.dot(X_centered, self.components)
+        # Project training data to PCA space
+        X_pca = np.dot(X_standardized, self.components)
 
-        # Normalize features
-        self.feature_std = np.std(self.training_features, axis=0)
-        self.feature_std[self.feature_std == 0] = 1
-        self.training_features = self.training_features / self.feature_std
+        # Initialize weights and bias with small random values
+        self.weights = np.random.randn(
+            self.n_components, self.n_classes) * 0.01
+        self.bias = np.zeros(self.n_classes)
 
-        self.training_labels = y
-        self.classes = np.unique(y)
+        # Convert labels to one-hot encoding
+        y_one_hot = self._to_one_hot(y)
 
-        # Compute class statistics
-        for c in self.classes:
-            class_samples = self.training_features[y == c]
-            self.class_means[c] = np.mean(class_samples, axis=0)
-            # Compute class covariance with regularization
-            cov = np.cov(class_samples.T)
-            # Add small constant to diagonal for stability
-            cov += np.eye(cov.shape[0]) * 1e-6
-            self.class_covariances[c] = cov
+        # Mini-batch gradient descent
+        batch_size = 32
+        n_samples = X_pca.shape[0]
+        best_loss = float('inf')
+        best_weights = None
+        best_bias = None
+        patience = 5
+        patience_counter = 0
+
+        for epoch in range(self.n_iterations):
+            # Shuffle data
+            indices = np.random.permutation(n_samples)
+            X_shuffled = X_pca[indices]
+            y_shuffled = y_one_hot[indices]
+
+            total_loss = 0
+
+            # Mini-batch training
+            for i in range(0, n_samples, batch_size):
+                X_batch = X_shuffled[i:i + batch_size]
+                y_batch = y_shuffled[i:i + batch_size]
+
+                # Forward pass
+                y_pred = self._forward(X_batch)
+
+                # Compute gradients with L2 regularization
+                error = y_pred - y_batch
+                dw = (1/len(X_batch)) * np.dot(X_batch.T,
+                                               error) + 0.01 * self.weights
+                db = (1/len(X_batch)) * np.sum(error, axis=0)
+
+                # Gradient clipping
+                dw = np.clip(dw, -1, 1)
+                db = np.clip(db, -1, 1)
+
+                # Update parameters
+                self.weights -= self.learning_rate * dw
+                self.bias -= self.learning_rate * db
+
+                # Accumulate loss
+                total_loss += np.mean(error**2)
+
+            # Early stopping check
+            avg_loss = total_loss / (n_samples // batch_size)
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_weights = self.weights.copy()
+                best_bias = self.bias.copy()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                self.weights = best_weights
+                self.bias = best_bias
+                break
+
+    def _to_one_hot(self, y):
+        """Convert labels to one-hot encoding"""
+        one_hot = np.zeros((len(y), self.n_classes))
+        for i, label in enumerate(y):
+            one_hot[i, int(label)-1] = 1
+        return one_hot
+
+    def _forward(self, X):
+        """Forward pass of linear regression"""
+        return np.dot(X, self.weights) + self.bias
 
     def project(self, X):
-        """
-        Project data onto normalized PCA space
-        """
-        X_centered = X - self.mean
-        X_proj = np.dot(X_centered, self.components)
-        return X_proj / self.feature_std
-
-    def mahalanobis_distance(self, sample, class_mean, class_cov):
-        """
-        Compute Mahalanobis distance between sample and class
-        """
-        diff = sample - class_mean
-        try:
-            inv_cov = np.linalg.inv(class_cov)
-            dist = np.sqrt(diff.dot(inv_cov).dot(diff))
-            return dist
-        except np.linalg.LinAlgError:
-            # Fallback to Euclidean distance if inversion fails
-            return np.linalg.norm(diff)
-
-    def compute_confidence(self, distances):
-        """
-        Compute confidence score based on distances
-        """
-        # Convert distances to similarities using exponential
-        similarities = np.exp(-distances / self.distance_weight)
-
-        # Normalize similarities to [0, 1]
-        if similarities.sum() > 0:
-            return similarities / similarities.sum()
-        return similarities
+        """Project data onto PCA space"""
+        X_standardized = self.standardize(X)
+        return np.dot(X_standardized, self.components)
 
     def predict(self, X):
         """
         Predict classes and provide confidence scores
         """
         X_proj = self.project(X)
-        predictions = []
-        confidences = []
+        scores = self._forward(X_proj)
 
-        for sample in X_proj:
-            # Compute distances to all classes using Mahalanobis distance
-            distances = np.array([
-                self.mahalanobis_distance(
-                    sample, self.class_means[c], self.class_covariances[c])
-                for c in self.classes
-            ])
+        # Softmax for better probability estimation
+        exp_scores = np.exp(scores - np.max(scores, axis=1, keepdims=True))
+        probas = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
 
-            # Get prediction and confidence
-            min_dist_idx = np.argmin(distances)
-            predicted_class = self.classes[min_dist_idx]
+        predictions = np.argmax(scores, axis=1) + 1
+        confidences = np.max(probas, axis=1)
 
-            # Compute confidence scores
-            conf_scores = self.compute_confidence(distances)
-            confidence = conf_scores[min_dist_idx]
-
-            predictions.append(predicted_class)
-            confidences.append(confidence)
-
-        return np.array(predictions), np.array(confidences)
+        return predictions, confidences
 
     def predict_proba(self, X):
         """
         Predict probability-like scores for each class
         """
         X_proj = self.project(X)
-        probas = []
+        scores = self._forward(X_proj)
 
-        for sample in X_proj:
-            # Compute distances to all classes
-            distances = np.array([
-                self.mahalanobis_distance(
-                    sample, self.class_means[c], self.class_covariances[c])
-                for c in self.classes
-            ])
+        # Apply softmax to get probabilities
+        exp_scores = np.exp(scores - np.max(scores, axis=1, keepdims=True))
+        probas = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
 
-            # Convert distances to probabilities
-            probas.append(self.compute_confidence(distances))
-
-        return np.array(probas)
+        return probas
 
 
-def evaluate_classification(train_data, train_labels,
-                            test_data_train, test_labels_train,
-                            test_data_test, test_labels_test,
-                            non_face_data, modified_face_data,
-                            n_components=50):
+def evaluate_classification_linear(train_data, train_labels,
+                                   test_data_train, test_labels_train,
+                                   test_data_test, test_labels_test,
+                                   non_face_data, modified_face_data,
+                                   n_components=50):
     """
-    Evaluate both face recognition and identification using improved PCA classifier
+    Evaluate both face recognition and identification using linear regression classifier
     """
     try:
         # Initialize and train classifier
-        clf = CustomPCAClassifier(
-            n_components=n_components, distance_weight=15.0)
+        clf = LinearRegressionPCAClassifier(n_components=n_components)
         clf.fit(train_data, train_labels)
 
-        # Get predictions
+        # Get predictions for training data
+        train_pred, train_conf = clf.predict(train_data)
+
+        # Get predictions for test sets
         pred_train_subjects, conf_train = clf.predict(test_data_train)
         pred_test_subjects, conf_test = clf.predict(test_data_test)
         pred_non_face, conf_non_face = clf.predict(non_face_data)
@@ -260,6 +316,10 @@ def evaluate_classification(train_data, train_labels,
         prob_modified = clf.predict_proba(modified_face_data)
 
         return {
+            'training': {
+                'predictions': train_pred,
+                'labels': train_labels
+            },
             'identification': {
                 'train_subjects': pred_train_subjects,
                 'test_subjects': pred_test_subjects
@@ -289,26 +349,17 @@ def evaluate_classification(train_data, train_labels,
         return None
 
 
-def visualize_eigenfaces(clf, num_components=5):
-    """
-    Visualize the first few PCA components (eigenfaces)
-    """
-    plt.figure(figsize=(15, 3))
-    for i in range(num_components):
-        plt.subplot(1, num_components, i + 1)
-        eigenface = clf.components[:, i].reshape(112, 92)
-        plt.imshow(eigenface, cmap='gray')
-        plt.title(f'Component {i+1}')
-        plt.axis('off')
-    plt.tight_layout()
-    plt.savefig('eigenfaces_new.png')
-    plt.close()
-
-
 def print_results(results, test_labels_train, test_labels_test):
     """
     Print comprehensive evaluation results
     """
+    print("\nTraining Set Results:")
+    train_acc = accuracy_score(
+        results['training']['labels'],
+        results['training']['predictions']
+    )
+    print(f"Training Accuracy: {train_acc:.3f}")
+
     print("\nFace Identification Results:")
 
     print("\nOn training subjects (2 images each):")
@@ -321,17 +372,24 @@ def print_results(results, test_labels_train, test_labels_test):
         test_labels_test, results['identification']['test_subjects'])
     print(f"Accuracy: {acc_test:.3f}")
 
+    # Calculate overall test accuracy
+    all_test_predictions = np.concatenate([
+        results['identification']['train_subjects'],
+        results['identification']['test_subjects']
+    ])
+    all_test_labels = np.concatenate([test_labels_train, test_labels_test])
+    overall_test_acc = accuracy_score(all_test_labels, all_test_predictions)
+    print(f"\nOverall Test Accuracy (all test images): {overall_test_acc:.3f}")
+
     print("\nFace Recognition Results:")
 
     print("\nOn non-face images:")
-    # Check if predictions are not in training subject IDs (should be rejected)
     non_face_preds = results['recognition']['non_face']
     non_face_correct = np.mean(
         [pred not in test_labels_train for pred in non_face_preds])
     print(f"Rejection rate: {non_face_correct:.3f}")
 
     print("\nOn modified face images:")
-    # Check if predictions are in training subject IDs (should be accepted as faces)
     modified_preds = results['recognition']['modified']
     modified_detection = np.mean(
         [pred in np.unique(test_labels_train) for pred in modified_preds])
@@ -346,12 +404,28 @@ def print_results(results, test_labels_train, test_labels_test):
         print(f"Max confidence: {np.max(conf):.3f}")
 
 
+def visualize_eigenfaces(clf, num_components=5):
+    """
+    Visualize the first few PCA components (eigenfaces)
+    """
+    plt.figure(figsize=(15, 3))
+    for i in range(num_components):
+        plt.subplot(1, num_components, i + 1)
+        eigenface = clf.components[:, i].reshape(112, 92)
+        plt.imshow(eigenface, cmap='gray')
+        plt.title(f'Component {i+1}')
+        plt.axis('off')
+    plt.tight_layout()
+    plt.savefig('eigenfaces_linear.png')
+    plt.close()
+
+
 def main():
     # Set random seed for reproducibility
     random.seed(42)
     np.random.seed(42)
 
-    # Load and split data (same as before)
+    # Load and split data
     print("Loading and splitting data...")
     (train_data, train_labels,
      test_data_train, test_labels_train,
@@ -368,9 +442,9 @@ def main():
     print(f"Modified face images: {len(modified_face_data)} images")
     print(f"Test subjects: {sorted(test_subject_ids)}")
 
-    # Train classifier and evaluate
-    print("\nTraining and evaluating custom PCA classifier...")
-    results = evaluate_classification(
+    # Train and evaluate linear regression classifier
+    print("\nTraining and evaluating linear regression PCA classifier...")
+    results = evaluate_classification_linear(
         train_data, train_labels,
         test_data_train, test_labels_train,
         test_data_test, test_labels_test,
@@ -381,7 +455,7 @@ def main():
     print_results(results, test_labels_train, test_labels_test)
 
     # Visualize eigenfaces
-    clf = CustomPCAClassifier()
+    clf = LinearRegressionPCAClassifier()
     clf.fit(train_data, train_labels)
     visualize_eigenfaces(clf)
 
