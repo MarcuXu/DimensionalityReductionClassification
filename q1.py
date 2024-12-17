@@ -137,7 +137,7 @@ def main(data_path):
 
         # Example reconstruction with different numbers of components
         test_face = data[0]  # First face in dataset
-        components_to_test = [5, 10, 25, 50, 100]
+        components_to_test = [5, 10, 25, 50, 100, 200, 300]
 
         fig, axes = plt.subplots(
             1, len(components_to_test) + 1, figsize=(15, 3))
@@ -168,5 +168,5 @@ def main(data_path):
 
 if __name__ == "__main__":
     # Replace with your dataset path
-    data_path = "./dataset"  # Update this to your actual path
+    data_path = "./att_faces"  # Update this to your actual path
     eigenfaces, mean_face, explained_variance_ratio = main(data_path)
